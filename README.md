@@ -1,6 +1,16 @@
 # BARF-NerfStudio
 An unofficial implementation of BARF in Nerfstudio including vanilla BARF and hash grid BARF.
 
+# Installation 
+Clone the repo and run the following commands:
+```
+conda activate nerfstudio
+cd BARF-NerfStudio/
+python3 -m pip install --upgrade pip
+pip install -e .
+ns-install-cli
+```
+
 # Gallery
 Photos/results here
 
