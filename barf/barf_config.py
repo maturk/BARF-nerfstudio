@@ -1,4 +1,3 @@
-
 """
 n2n configuration file.
 """
@@ -43,7 +42,7 @@ barf_freq_method = MethodSpecification(
                     scheduler=ExponentialDecaySchedulerConfig(lr_final=1e-7),
                 ),
             ),
-            model=BARFFreqModelConfig()
+            model=BARFFreqModelConfig(),
         ),
         optimizers={
             "fields": {
@@ -79,7 +78,7 @@ barf_hash_method = MethodSpecification(
                     scheduler=ExponentialDecaySchedulerConfig(lr_final=1e-7),
                 ),
             ),
-            model=NerfactoModelConfig(
+            model=BARFHashModelConfig(
                 eval_num_rays_per_chunk=1 << 15,
             ),
         ),
