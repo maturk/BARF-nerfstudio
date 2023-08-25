@@ -1,40 +1,35 @@
 import typing
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional, Type, Union, cast
+from typing import Literal, Optional, Type, Optional
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TextColumn,
-    TimeElapsedColumn,
-)
-from time import time
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManagerConfig, VanillaDataManager, VanillaDataManagerConfig
+from nerfstudio.data.datamanagers.base_datamanager import (
+    DataManagerConfig,
+    VanillaDataManager,
+    VanillaDataManagerConfig,
+)
+from torch.cuda.amp.grad_scaler import GradScaler
+
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
 from nerfstudio.data.datasets.base_dataset import InputDataset
-from nerfstudio.configs import base_config as cfg
-from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig
+from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.exporter.exporter_utils import (
     collect_camera_poses_for_dataset,
-    collect_init_camera_poses_for_dataset
+    # collect_init_camera_poses_for_dataset
 )
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.pipelines.base_pipeline import (
     VanillaPipeline,
     VanillaPipelineConfig,
 )
-from nerfstudio.utils import comms, profiler
+from nerfstudio.utils import profiler
 from barf.barf import BARFFreqModelConfig
-from barf.visualizer.util_vis import plot_save_poses_blender
-from barf.visualizer import camera
+from barf.visualizer.util_vis import plot_save_poses_blender, camera
 from easydict import EasyDict
 import matplotlib.pyplot as plt
 import imageio
@@ -69,6 +64,7 @@ class BARFPipeline(VanillaPipeline):
         test_mode: Literal["test", "val", "inference"] = "val",
         world_size: int = 1,
         local_rank: int = 0,
+        grad_scaler: Optional[GradScaler] = None,
     ):
         super(VanillaPipeline, self).__init__()
         self.config = config
@@ -90,8 +86,7 @@ class BARFPipeline(VanillaPipeline):
 
         self.world_size = world_size
         if world_size > 1:
-            self._model = typing.cast(Model, DDP(self._model, device_ids=[
-                                      local_rank], find_unused_parameters=True))
+            self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
             dist.barrier(device_ids=[local_rank])
 
         self.poses_dir = ""
@@ -103,10 +98,8 @@ class BARFPipeline(VanillaPipeline):
         return pose
 
     def get_all_camera_poses(self, frames):
-        pose_raw_all = [torch.tensor(
-            f["transform_matrix"], dtype=torch.float32) for f in frames]
-        pose_canon_all = torch.stack(
-            [self.parse_raw_camera(p) for p in pose_raw_all], dim=0)
+        pose_raw_all = [torch.tensor(f["transform_matrix"], dtype=torch.float32) for f in frames]
+        pose_canon_all = torch.stack([self.parse_raw_camera(p) for p in pose_raw_all], dim=0)
         return pose_canon_all
 
     @profiler.time_function
@@ -118,18 +111,15 @@ class BARFPipeline(VanillaPipeline):
             step: current iteration step
         """
         self.eval()
-        image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(
-            step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(
-            camera_ray_bundle)
-        metrics_dict, images_dict = self.model.get_image_metrics_and_images(
-            outputs, batch)
+        image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
+        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
         assert "image_idx" not in metrics_dict
         metrics_dict["image_idx"] = image_idx
         assert "num_rays" not in metrics_dict
         metrics_dict["num_rays"] = len(camera_ray_bundle)
-        self.save_poses(step=step)
-        self.create_pose_gif()
+        # self.save_poses(step=step)
+        # self.create_pose_gif()
         self.train()
         return metrics_dict, images_dict
 
@@ -147,41 +137,33 @@ class BARFPipeline(VanillaPipeline):
         eval_camera_optimizer = self.datamanager.eval_camera_optimizer
         assert isinstance(eval_camera_optimizer, CameraOptimizer)
 
-        train_opt_frames = collect_camera_poses_for_dataset(
-            train_dataset, train_camera_optimizer)
-        train_init_frames = collect_init_camera_poses_for_dataset(
-            train_dataset)
-        eval_opt_frames = collect_camera_poses_for_dataset(
-            eval_dataset, eval_camera_optimizer)
-        eval_init_frames = collect_init_camera_poses_for_dataset(eval_dataset)
+        train_opt_frames = collect_camera_poses_for_dataset(train_dataset, train_camera_optimizer)
+        train_init_frames = collect_init_camera_poses_for_dataset(train_dataset)
+        collect_camera_poses_for_dataset(eval_dataset, eval_camera_optimizer)
+        collect_init_camera_poses_for_dataset(eval_dataset)
 
         train_opt_poses = self.get_all_camera_poses(train_opt_frames["frames"])
-        train_init_frames = self.get_all_camera_poses(
-            train_init_frames["frames"])
+        train_init_frames = self.get_all_camera_poses(train_init_frames["frames"])
         # eval_opt_poses = self.get_all_camera_poses(eval_opt_frames["frames"])
         # eval_init_poses = self.get_all_camera_poses(eval_init_frames["frames"])
 
-        opt = EasyDict({
-            'visdom': EasyDict({
-                'cam_depth': 1  # adjust this as needed
-            })
-        })
+        opt = EasyDict({"visdom": EasyDict({"cam_depth": 1})})  # adjust this as needed
         fig = plt.figure(figsize=(5, 5))
 
         if not os.path.exists(self.poses_dir):
             os.makedirs(self.poses_dir)
 
-        plot_save_poses_blender(opt, fig, train_opt_poses,
-                                train_init_frames, path=self.poses_dir, ep=step)
+        plot_save_poses_blender(opt, fig, train_opt_poses, train_init_frames, path=self.poses_dir, ep=step)
 
-        plt.close('all')
+        plt.close("all")
 
     def natural_sort_key(self, s):
         """
         Sort strings containing numbers in a way that '2' comes before '10'.
         """
         import re
-        return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+
+        return [int(text) if text.isdigit() else text.lower() for text in re.split("([0-9]+)", s)]
 
     def create_pose_gif(self, duration=0.1):
         """
@@ -194,15 +176,13 @@ class BARFPipeline(VanillaPipeline):
         """
 
         # Get list of all PNG files in the folder
-        filenames = [f for f in os.listdir(
-            str(self.poses_dir)) if f.endswith('.png')]
+        filenames = [f for f in os.listdir(str(self.poses_dir)) if f.endswith(".png")]
 
         # Sort filenames numerically
         filenames = sorted(filenames, key=self.natural_sort_key)
 
         # Read each file and append to a list
-        images = [imageio.imread(os.path.join(
-            str(self.poses_dir), filename)) for filename in filenames]
+        images = [imageio.imread(os.path.join(str(self.poses_dir), filename)) for filename in filenames]
 
         # Create the GIF
         output_gif_name = self.poses_dir + "/poses.gif"
