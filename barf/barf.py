@@ -19,14 +19,15 @@ Implementation of vanilla nerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Type
+from typing import Dict, List, Tuple, Type
 
-from collections import defaultdict
 
 from pathlib import Path
 import os
 import numpy as np
 import cv2
+from nerfstudio.field_components.spatial_distortions import SceneContraction
+
 
 import torch
 from torch.nn import Parameter
@@ -36,7 +37,6 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
 from nerfstudio.cameras.rays import RayBundle
-from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -72,14 +72,13 @@ def save_image(image, image_out, log=True):
     if log:
         print(f"Image saved to path {image_out}")
 
+
 # BARF Configs
-
-
 @dataclass
 class BARFHashModelConfig(NerfactoModelConfig):
     """BARF hashgrid config"""
 
-    _target: Type = field(default_factory=lambda: BARFModelNerfacto)
+    _target: Type = field(default_factory=lambda: BARFHashModel)
 
     use_gradient_scaling: bool = False
     """Use gradient scaler where the gradients are lower for points closer to the camera."""
@@ -95,14 +94,20 @@ class BARFHashModelConfig(NerfactoModelConfig):
     """Whether to disable scene contraction or not."""
 
     # BARF Nerfacto Configs
-    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(
-        mode="SO3xR3")
+    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
     """Config of the camera optimizer to use"""
     bundle_adjust: bool = True
     """Coarse to fine hash grid frequency optimization"""
     coarse_to_fine_iters: tuple = (0.0, 0.1)
     """Iterations (as a percentage of total iterations) at which c2f hash grid freq optimization starts and ends.
     Linear interpolation between (start, end) and full activation from end onwards."""
+
+
+@dataclass
+class BARFGradientHashModelConfig(NerfactoModelConfig):
+    """BARF gradient modulated hashgrid config"""
+
+    _target: Type = field(default_factory=lambda: BARFGradientHashModel)
 
 
 @dataclass
@@ -120,7 +125,7 @@ class BARFFreqModelConfig(ModelConfig):
 
 
 class BARFFreqModel(Model):
-    """ Bundle Adjusting Radiance Field adaptation
+    """Bundle Adjusting Radiance Field adaptation
 
     Args:
         config: Basic BARF configuration to instantiate model
@@ -145,10 +150,20 @@ class BARFFreqModel(Model):
 
         # fields
         position_encoding = BARFEncodingFreq(
-            in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=9.0, coarse_to_fine_iters=self.config.coarse_to_fine_iters, include_input=True
+            in_dim=3,
+            num_frequencies=10,
+            min_freq_exp=0.0,
+            max_freq_exp=9.0,
+            coarse_to_fine_iters=self.config.coarse_to_fine_iters,
+            include_input=True,
         )
         direction_encoding = BARFEncodingFreq(
-            in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=3.0, coarse_to_fine_iters=self.config.coarse_to_fine_iters, include_input=True
+            in_dim=3,
+            num_frequencies=4,
+            min_freq_exp=0.0,
+            max_freq_exp=3.0,
+            coarse_to_fine_iters=self.config.coarse_to_fine_iters,
+            include_input=True,
         )
 
         # position_encoding = NeRFEncoding(
@@ -169,11 +184,9 @@ class BARFFreqModel(Model):
             )
 
         # samplers
-        self.sampler_uniform = UniformSampler(
-            num_samples=self.config.num_coarse_samples)
+        self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
         if self.config.fine_field_enabled:
-            self.sampler_pdf = PDFSampler(
-                num_samples=self.config.num_importance_samples)
+            self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
@@ -192,11 +205,9 @@ class BARFFreqModel(Model):
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
-            raise ValueError(
-                "populate_fields() must be called before get_param_groups")
+            raise ValueError("populate_fields() must be called before get_param_groups")
         if self.config.fine_field_enabled:
-            param_groups["fields"] = list(
-                self.field_coarse.parameters()) + list(self.field_fine.parameters())
+            param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
         else:
             param_groups["fields"] = list(self.field_coarse.parameters())
         return param_groups
@@ -204,17 +215,14 @@ class BARFFreqModel(Model):
     def get_outputs(self, ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
         outputs = {}
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
-            raise ValueError(
-                "populate_fields() must be called before get_outputs")
+            raise ValueError("populate_fields() must be called before get_outputs")
 
         # uniform sampling
         ray_samples_uniform = self.sampler_uniform(ray_bundle)
 
         # coarse field:
-        field_outputs_coarse = self.field_coarse.forward(
-            ray_samples_uniform, self._step)
-        weights_coarse = ray_samples_uniform.get_weights(
-            field_outputs_coarse[FieldHeadNames.DENSITY])
+        field_outputs_coarse = self.field_coarse.forward(ray_samples_uniform, self._step)
+        weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
         rgb_coarse = self.renderer_rgb(
             rgb=field_outputs_coarse[FieldHeadNames.RGB],
             weights=weights_coarse,
@@ -225,14 +233,11 @@ class BARFFreqModel(Model):
 
         if self.config.fine_field_enabled:
             # pdf sampling
-            ray_samples_pdf = self.sampler_pdf(
-                ray_bundle, ray_samples_uniform, weights_coarse)
+            ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
 
             # fine field:
-            field_outputs_fine = self.field_fine.forward(
-                ray_samples_pdf, self._step)
-            weights_fine = ray_samples_pdf.get_weights(
-                field_outputs_fine[FieldHeadNames.DENSITY])
+            field_outputs_fine = self.field_fine.forward(ray_samples_pdf, self._step)
+            weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
             rgb_fine = self.renderer_rgb(
                 rgb=field_outputs_fine[FieldHeadNames.RGB],
                 weights=weights_fine,
@@ -268,7 +273,8 @@ class BARFFreqModel(Model):
                 where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                 update_every_num_iters=1,
                 func=self.step_cb,
-            )]
+            )
+        ]
 
         return callbacks
 
@@ -280,8 +286,7 @@ class BARFFreqModel(Model):
 
         if self.config.fine_field_enabled:
             rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
-            loss_dict = {"rgb_loss_coarse": rgb_loss_coarse,
-                         "rgb_loss_fine": rgb_loss_fine}
+            loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
         else:
             loss_dict = {"rgb_loss": rgb_loss_coarse}
 
@@ -299,7 +304,6 @@ class BARFFreqModel(Model):
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-
         image = batch["image"].to(outputs["rgb_coarse"].device)
         rgb_coarse = outputs["rgb_coarse"]
         acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
@@ -355,13 +359,11 @@ class BARFFreqModel(Model):
                 "ssim": float(coarse_ssim),
                 "lpips": float(coarse_lpips),
             }
-        images_dict = {"img": combined_rgb,
-                       "accumulation": combined_acc, "depth": combined_depth}
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict
 
 
-# BARF Models
-class BARFModelNerfacto(NerfactoModel):
+class BARFHashModel(NerfactoModel):
     """BARF implementation using iNGP hash grid encoding"""
 
     config: BARFHashModelConfig
@@ -399,8 +401,7 @@ class BARFModelNerfacto(NerfactoModel):
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
-        param_groups["proposal_networks"] = list(
-            self.proposal_networks.parameters())
+        param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
         param_groups["fields"] = list(self.field.parameters())
         camera_opt_params = list(self.camera_optimizer.parameters())
         if self.config.camera_optimizer.mode != "off":
@@ -411,24 +412,19 @@ class BARFModelNerfacto(NerfactoModel):
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
-        if self.training:
-            self.camera_optimizer.apply_to_raybundle(ray_bundle)
+        # if self.training:
+        #    self.camera_optimizer.apply_to_raybundle(ray_bundle)
         ray_samples: RaySamples
-        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(
-            ray_bundle, density_fns=self.density_fns)
-        field_outputs = self.field.forward(
-            ray_samples, compute_normals=self.config.predict_normals)
+        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
+        field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
         if self.config.use_gradient_scaling:
-            field_outputs = scale_gradients_by_distance_squared(
-                field_outputs, ray_samples)
+            field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
 
-        weights = ray_samples.get_weights(
-            field_outputs[FieldHeadNames.DENSITY])
+        weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
 
-        rgb = self.renderer_rgb(
-            rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
@@ -439,10 +435,8 @@ class BARFModelNerfacto(NerfactoModel):
         }
 
         if self.config.predict_normals:
-            normals = self.renderer_normals(
-                normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
-            pred_normals = self.renderer_normals(
-                field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
+            normals = self.renderer_normals(normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
+            pred_normals = self.renderer_normals(field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
             outputs["normals"] = self.normals_shader(normals)
             outputs["pred_normals"] = self.normals_shader(pred_normals)
         # These use a lot of GPU memory, so we avoid storing them for eval.
@@ -452,8 +446,7 @@ class BARFModelNerfacto(NerfactoModel):
 
         if self.training and self.config.predict_normals:
             outputs["rendered_orientation_loss"] = orientation_loss(
-                weights.detach(
-                ), field_outputs[FieldHeadNames.NORMALS], ray_bundle.directions
+                weights.detach(), field_outputs[FieldHeadNames.NORMALS], ray_bundle.directions
             )
 
             outputs["rendered_pred_normal_loss"] = pred_normal_loss(
@@ -463,14 +456,19 @@ class BARFModelNerfacto(NerfactoModel):
             )
 
         for i in range(self.config.num_proposal_iterations):
-            outputs[f"prop_depth_{i}"] = self.renderer_depth(
-                weights=weights_list[i], ray_samples=ray_samples_list[i])
+            outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
         return outputs
+
+    def step_cb(self, step):
+        """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
+        self._step = step
+        # self._steps_since_update += 1
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         callbacks = []
+
         if self.config.use_proposal_weight_anneal:
             # anneal the weights of the proposal network before doing PDF sampling
             N = self.config.proposal_weights_anneal_max_num_iters
@@ -482,93 +480,34 @@ class BARFModelNerfacto(NerfactoModel):
                 def bias(x, b):
                     return b * x / ((b - 1) * x + 1)
 
-                anneal = bias(
-                    train_frac, self.config.proposal_weights_anneal_slope)
+                anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
                 self.proposal_sampler.set_anneal(anneal)
 
             callbacks.append(
                 TrainingCallback(
-                    where_to_run=[
-                        TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
                     update_every_num_iters=1,
                     func=set_anneal,
                 )
             )
             callbacks.append(
                 TrainingCallback(
-                    where_to_run=[
-                        TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
                     func=self.proposal_sampler.step_cb,
                 )
             )
 
-            def get_init_camera_poses(
-                self,
-                training_callback_attributes: TrainingCallbackAttributes,
-                step: int,
-            ):  # pylint: disable=unused-argument
-                self.cameras = training_callback_attributes.pipeline.datamanager.train_dataparser_outputs.cameras
-                # print(self.cameras.camera_to_worlds[:3])
-                # self.cameras.camera_to_worlds = self.init_train_camera_poses()
-
             callbacks.append(
                 TrainingCallback(
-                    where_to_run=[
-                        TrainingCallbackLocation.BEFORE_TRAIN,
-                    ],
-                    func=get_init_camera_poses,
-                    update_every_num_iters=100,
-                    args=[self, training_callback_attributes],
-                )
-            )
-
-            callbacks.append(
-                TrainingCallback(
-                    where_to_run=[
-                        TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
-                    func=self.field.step_cb,
+                    func=self.step_cb,
                 )
             )
+        return callbacks
 
-            # Delete this maybe
-            def save_images(
-                self,
-                training_callback_attributes: TrainingCallbackAttributes,
-                step: int,
-            ):  # pylint: disable=unused-argument
-                self.eval()
-                (
-                    camera_ray_bundle,
-                    batch,
-                ) = training_callback_attributes.pipeline.datamanager.at_train_end()
-                outputs, ref = self.at_train_end(
-                    camera_ray_bundle=camera_ray_bundle, batch=batch)
-                pred = outputs["rgb"]
-                self.save_path = f"/home/maturk/data/scratch/nerfacto/pred_{step+ 1:05d}.png"
-                self.ref_save_path = f"/home/maturk/data/scratch/ref_rgb.png"
-                if self.step % 100 == 0:
-                    # save_image(pred, self.save_path, log=True)
-                    # save_image(ref, self.ref_save_path, log=False)
-                    pass
 
-            callbacks.append(
-                TrainingCallback(
-                    where_to_run=[
-                        TrainingCallbackLocation.AFTER_TRAIN,
-                        TrainingCallbackLocation.AFTER_TRAIN_ITERATION,
-                    ],
-                    func=save_images,
-                    update_every_num_iters=100,
-                    args=[self, training_callback_attributes],
-                )
-            )
-
-    # DELETE
-    def at_train_end(self, **kwargs):
-        camera_ray_bundle = kwargs["camera_ray_bundle"]
-        batch = kwargs["batch"]
-        outputs = self.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-        ref = batch["image"].to(self.device)
-        return outputs, ref
+class BARFGradientModel(NerfactoModel):
+    config: BARFGradientModel
+    pass
