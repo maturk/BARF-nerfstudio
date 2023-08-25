@@ -3,11 +3,22 @@ name = "BARF-NerfStudio"
 version = "0.1.0"
 description = "Playground for pose stuff."
 
-dependencies = ["nerfstudio >= 0.3.0"] 
+dependencies = [
+    "ftfy",
+    "regex",
+    "tqdm",
+    "colour",
+    "easydict",
+    "termcolor",
+    "imageio",
+    "trimesh",
+    "nerfstudio>=0.2.0",
+    "colour-checker-detection",
+]
 
 [tool.setuptools.packages.find]
 include = ["barf*"]
 
 [project.entry-points.'nerfstudio.method_configs']
 barf-freq = 'barf.barf_config:barf_freq_method'
-#barf-hash = 'barf.barf_config:barf_hash_method'
+barf-hash = 'barf.barf_config:barf_hash_method'
