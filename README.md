@@ -11,6 +11,12 @@ pip install -e .
 ns-install-cli
 ```
 
+# Running BARF methods
+```
+ns-train barf-freq --data [DATA]
+ns-train barf-hash --data [DATA]
+```
+
 # Gallery
 Photos/results here
 
