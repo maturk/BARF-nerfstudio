@@ -14,6 +14,7 @@ dependencies = [
     "trimesh",
     "nerfstudio>=0.2.0",
     "colour-checker-detection",
+    "ipdb",
 ]
 
 [tool.setuptools.packages.find]
