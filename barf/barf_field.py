@@ -28,7 +28,7 @@ from jaxtyping import Float, Int, Shaped
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 
-from nerfstudio.fields.base_field import Field
+from nerfstudio.fields.base_field import Field, get_normalized_directions
 from nerfstudio.fields.nerfacto_field import NerfactoField
 from nerfstudio.utils.writer import GLOBAL_BUFFER
 
@@ -181,7 +181,7 @@ class BARFFieldNerfacto(NerfactoField):
         if ray_samples.camera_indices is None:
             raise AttributeError("Camera indices are not provided.")
         camera_indices = ray_samples.camera_indices.squeeze()
-        directions = shift_directions_for_tcnn(ray_samples.frustums.directions)
+        directions = get_normalized_directions(ray_samples.frustums.directions)
         directions_flat = directions.view(-1, 3)
         d = self.direction_encoding(directions_flat)
 
