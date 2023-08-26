@@ -1,5 +1,5 @@
 [project]
-name = "BARF-NerfStudio"
+name = "BARF-nerfstudio"
 version = "0.1.0"
 description = "Playground for pose stuff."
 
@@ -23,3 +23,4 @@ include = ["barf*"]
 [project.entry-points.'nerfstudio.method_configs']
 barf-freq = 'barf.barf_config:barf_freq_method'
 barf-hash = 'barf.barf_config:barf_hash_method'
+barf-grad = 'barf.barf_config:barf_grad_hash_method'
