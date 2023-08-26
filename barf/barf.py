@@ -19,17 +19,12 @@ Implementation of vanilla nerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Type
+from typing import Dict, List, Tuple, Type, Optional
 
-
-from pathlib import Path
-import os
 import numpy as np
-import cv2
-from nerfstudio.field_components.spatial_distortions import SceneContraction
-
-
 import torch
+from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
+from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -43,6 +38,7 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackLocation,
 )
 from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.spatial_distortions import SceneContraction
 from nerfstudio.model_components.losses import MSELoss
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
@@ -53,24 +49,6 @@ from nerfstudio.model_components.renderers import (
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps, colors, misc
-
-from barf.barf_field import BARFEncodingFreq, BARFFieldFreq, BARFFieldNerfacto
-
-
-def save_image(image, image_out, log=True):
-    """Save image to file"""
-    if not Path(os.path.dirname(image_out)).exists():
-        Path(os.path.dirname(image_out)).mkdir()
-    if not isinstance(image_out, str):
-        image_out = str(image_out)
-    if torch.is_tensor(image):
-        image = (image.detach().cpu().numpy() * 255).astype(np.uint8)
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    if not Path(os.path.dirname(image_out)).exists():
-        Path(os.path.dirname(image_out)).mkdir()
-    cv2.imwrite(image_out, image)
-    if log:
-        print(f"Image saved to path {image_out}")
 
 
 # BARF Configs
@@ -109,6 +87,9 @@ class BARFGradientHashModelConfig(NerfactoModelConfig):
 
     _target: Type = field(default_factory=lambda: BARFGradientHashModel)
 
+    coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 1000)
+    """(start, end) iterations at which gradients of hash grid levels are modulated. Linear interpolation between (start, end) and full activation from end onwards."""
+
 
 @dataclass
 class BARFFreqModelConfig(ModelConfig):
@@ -124,6 +105,7 @@ class BARFFreqModelConfig(ModelConfig):
     coarse_to_fine_iters: tuple = (0.1, 0.5)
 
 
+# BARF models
 class BARFFreqModel(Model):
     """Bundle Adjusting Radiance Field adaptation
 
@@ -364,7 +346,7 @@ class BARFFreqModel(Model):
 
 
 class BARFHashModel(NerfactoModel):
-    """BARF implementation using iNGP hash grid encoding"""
+    """BARF implementation using hash grid encoding that masks hash grid levels."""
 
     config: BARFHashModelConfig
 
@@ -377,7 +359,7 @@ class BARFHashModel(NerfactoModel):
             scene_contraction = SceneContraction(order=float("inf"))
 
         # BARF Field
-        self.field = BARFFieldNerfacto(
+        self.field = BARFHashField(
             self.scene_box.aabb,
             hidden_dim=self.config.hidden_dim,
             num_levels=self.config.num_levels,
@@ -508,6 +490,33 @@ class BARFHashModel(NerfactoModel):
         return callbacks
 
 
-class BARFGradientModel(NerfactoModel):
-    config: BARFGradientModel
-    pass
+class BARFGradientHashModel(NerfactoModel):
+    """BARF implementation using hash grid that scales gradients at different level resolutions."""
+
+    config: BARFGradientHashModelConfig
+
+    def populate_modules(self):
+        super().populate_modules()
+
+        if self.config.disable_scene_contraction:
+            scene_contraction = None
+        else:
+            scene_contraction = SceneContraction(order=float("inf"))
+
+        # BARF Field
+        self.field = BARFGradientHashField(
+            self.scene_box.aabb,
+            hidden_dim=self.config.hidden_dim,
+            num_levels=self.config.num_levels,
+            max_res=self.config.max_res,
+            log2_hashmap_size=self.config.log2_hashmap_size,
+            hidden_dim_color=self.config.hidden_dim_color,
+            hidden_dim_transient=self.config.hidden_dim_transient,
+            spatial_distortion=scene_contraction,
+            num_images=self.num_train_data,
+            use_pred_normals=self.config.predict_normals,
+            use_average_appearance_embedding=self.config.use_average_appearance_embedding,
+            appearance_embedding_dim=self.config.appearance_embed_dim,
+            implementation=self.config.implementation,
+            coarse_to_fine_iters=self.config.coarse_to_fine_iters,
+        )
