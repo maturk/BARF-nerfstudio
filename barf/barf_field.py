@@ -161,10 +161,11 @@ class BARFHashField(NerfactoField):
         coarse_to_fine_iters: Optional[Tuple[float, float]] = None,
         **kwargs,
     ) -> None:
-        super().__init__(aabb=aabb, num_images=num_images)
+        super().__init__(aabb=aabb, num_images=num_images, **kwargs)
         self.bundle_adjust = bundle_adjust
         self.coarse_to_fine_iters = coarse_to_fine_iters
         self.step = 0
+        self.freq_warmup = 0
 
     def mask_freqs(self, hashgrid_outputs):
         """
@@ -177,6 +178,9 @@ class BARFHashField(NerfactoField):
         hashgrid_outputs = hashgrid_outputs.view(-1, N, D)
         masked = self.get_freq_mask(hashgrid_outputs.shape[0], N, D, hashgrid_outputs.device) * hashgrid_outputs
         return masked.view(masked.shape[0], -1)
+
+    def step_cb(self, step):
+        self.step = step
 
     def get_freq_mask(self, B, N, D, device):
         import numpy as np

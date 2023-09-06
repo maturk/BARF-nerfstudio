@@ -62,14 +62,12 @@ class BARFHashModelConfig(NerfactoModelConfig):
     """Use gradient scaler where the gradients are lower for points closer to the camera."""
     use_uncertainty_loss: bool = False
     """Predict uncertainty (variance) for render output"""
-    disable_scene_contraction: bool = True
+    disable_scene_contraction: bool = False
     """Whether to disable scene contraction or not."""
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
     predict_normals: bool = False
     """Whether to predict normals or not."""
-    disable_scene_contraction: bool = False
-    """Whether to disable scene contraction or not."""
 
     # BARF Nerfacto Configs
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
@@ -364,6 +362,8 @@ class BARFHashModel(NerfactoModel):
             hidden_dim=self.config.hidden_dim,
             num_levels=self.config.num_levels,
             max_res=self.config.max_res,
+            base_res=self.config.base_res,
+            features_per_level=self.config.features_per_level,
             log2_hashmap_size=self.config.log2_hashmap_size,
             hidden_dim_color=self.config.hidden_dim_color,
             hidden_dim_transient=self.config.hidden_dim_transient,
@@ -377,20 +377,20 @@ class BARFHashModel(NerfactoModel):
             coarse_to_fine_iters=self.config.coarse_to_fine_iters,
         )
 
-        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
-            num_cameras=self.num_train_data, device="cpu"
-        )
+        # self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+        #    num_cameras=self.num_train_data, device="cpu"
+        # )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
         param_groups["fields"] = list(self.field.parameters())
-        camera_opt_params = list(self.camera_optimizer.parameters())
-        if self.config.camera_optimizer.mode != "off":
-            assert len(camera_opt_params) > 0
-            param_groups["camera_opt"] = camera_opt_params
-        else:
-            assert len(camera_opt_params) == 0
+        # camera_opt_params = list(self.camera_optimizer.parameters())
+        # if self.config.camera_optimizer.mode != "off":
+        #    assert len(camera_opt_params) > 0
+        #    param_groups["camera_opt"] = camera_opt_params
+        # else:
+        #    assert len(camera_opt_params) == 0
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
@@ -441,11 +441,6 @@ class BARFHashModel(NerfactoModel):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
         return outputs
 
-    def step_cb(self, step):
-        """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
-        self._step = step
-        # self._steps_since_update += 1
-
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -484,7 +479,7 @@ class BARFHashModel(NerfactoModel):
                 TrainingCallback(
                     where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
                     update_every_num_iters=1,
-                    func=self.step_cb,
+                    func=self.field.step_cb,
                 )
             )
         return callbacks
