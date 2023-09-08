@@ -25,6 +25,7 @@ import numpy as np
 import torch
 from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
 from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
+from barf.utils.colormaps import apply_uncertainty_colormap
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -49,6 +50,7 @@ from nerfstudio.model_components.renderers import (
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps, colors, misc
+from nerfstudio.utils.writer import GLOBAL_BUFFER
 
 
 # BARF Configs
@@ -64,7 +66,7 @@ class BARFHashModelConfig(NerfactoModelConfig):
     """Predict uncertainty (variance) for render output"""
     disable_scene_contraction: bool = False
     """Whether to disable scene contraction or not."""
-    use_average_appearance_embedding: bool = True
+    use_average_appearance_embedding: bool = False
     """Whether to use average appearance embedding or zeros for inference."""
     predict_normals: bool = False
     """Whether to predict normals or not."""
@@ -85,7 +87,7 @@ class BARFGradientHashModelConfig(NerfactoModelConfig):
 
     _target: Type = field(default_factory=lambda: BARFGradientHashModel)
 
-    coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 1000)
+    coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 3000)
     """(start, end) iterations at which gradients of hash grid levels are modulated. Linear interpolation between (start, end) and full activation from end onwards."""
 
 
@@ -101,6 +103,14 @@ class BARFFreqModelConfig(ModelConfig):
     fine_field_enabled: bool = True
     """Whether or not to use a fine network"""
     coarse_to_fine_iters: tuple = (0.1, 0.5)
+    """Iterations (as a percentage of total iterations) at which c2f hash grid freq optimization starts and ends.
+    Linear interpolation between (start, end) and full activation from end onwards."""
+    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
+    """Config of the camera optimizer to use"""
+    freeze_fields: Optional[List[float]]  = None
+    """ List of windows (as a percentage of total iterations) where the fields will not be trained. """
+    freeze_cam: Optional[List[float]]  = None
+    """ List of windows (as a percentage of total iterations) where the camera optimizer will not be trained. """
 
 
 # BARF models
@@ -182,6 +192,27 @@ class BARFFreqModel(Model):
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
         self._step = 0
 
+        # camera optimizer
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cuda"
+        )
+
+        assert self.config.freeze_fields is None or len(self.config.freeze_fields) % 2 == 0
+        self.freeze_fields = []
+        if self.config.freeze_fields is not None:
+            for i in range(0, len(self.config.freeze_fields), 2):
+                assert freeze_fields[i] < freeze_fields[i+1]
+                self.freeze_fields.append((freeze_fields[i], freeze_fields[i+1]))
+        
+        assert self.config.freeze_cam is None or len(self.config.freeze_cam) % 2 == 0
+        self.freeze_cam = []
+        if self.config.freeze_cam is not None:
+            for i in range(0, len(self.config.freeze_cam), 2):
+                assert self.config.freeze_cam[i] < self.config.freeze_cam[i+1]
+                self.freeze_cam.append((self.config.freeze_cam[i], self.config.freeze_cam[i+1]))
+
+
+
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
@@ -190,9 +221,44 @@ class BARFFreqModel(Model):
             param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
         else:
             param_groups["fields"] = list(self.field_coarse.parameters())
+
+        camera_opt_params = list(self.camera_optimizer.parameters())
+        if self.config.camera_optimizer.mode != "off":
+            camera_opt_params = list(self.camera_optimizer.parameters())
+            assert len(camera_opt_params) > 0
+            param_groups["camera_opt"] = camera_opt_params
+        else:
+            assert len(camera_opt_params) == 0
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
+        progress : float = self._step / GLOBAL_BUFFER.get("max_iter", 0)
+        for freeze_window in self.freeze_fields:
+            if progress >= freeze_window[0] and progress <= freeze_window[1]:
+                for param in self.field_coarse.parameters():
+                    param.requires_grad = False
+                if self.config.fine_field_enabled:
+                    for param in self.field_fine.parameters():
+                        param.requires_grad = False
+                break
+            else:
+                for param in self.field_coarse.parameters():
+                    param.requires_grad = True
+                if self.config.fine_field_enabled:
+                    for param in self.field_fine.parameters():
+                        param.requires_grad = True
+        
+        for freeze_window in self.freeze_cam:
+            if progress >= freeze_window[0] and progress <= freeze_window[1]:
+                for param in self.camera_optimizer.parameters():
+                    param.requires_grad = False
+                break
+            else:
+                for param in self.camera_optimizer.parameters():
+                    param.requires_grad = True
+
+        if self.training:
+           self.camera_optimizer.apply_to_raybundle(ray_bundle)
         outputs = {}
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
             raise ValueError("populate_fields() must be called before get_outputs")
@@ -244,7 +310,7 @@ class BARFFreqModel(Model):
         """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
         self._step = step
         # self._steps_since_update += 1
-
+            
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -377,25 +443,25 @@ class BARFHashModel(NerfactoModel):
             coarse_to_fine_iters=self.config.coarse_to_fine_iters,
         )
 
-        # self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
-        #    num_cameras=self.num_train_data, device="cpu"
-        # )
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+           num_cameras=self.num_train_data, device="cuda"
+        )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
         param_groups["fields"] = list(self.field.parameters())
-        # camera_opt_params = list(self.camera_optimizer.parameters())
-        # if self.config.camera_optimizer.mode != "off":
-        #    assert len(camera_opt_params) > 0
-        #    param_groups["camera_opt"] = camera_opt_params
-        # else:
-        #    assert len(camera_opt_params) == 0
+        camera_opt_params = list(self.camera_optimizer.parameters())
+        if self.config.camera_optimizer.mode != "off":
+           assert len(camera_opt_params) > 0
+           param_groups["camera_opt"] = camera_opt_params
+        else:
+           assert len(camera_opt_params) == 0
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
-        # if self.training:
-        #    self.camera_optimizer.apply_to_raybundle(ray_bundle)
+        if self.training:
+            self.camera_optimizer.apply_to_raybundle(ray_bundle)
         ray_samples: RaySamples
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
         field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
@@ -514,4 +580,8 @@ class BARFGradientHashModel(NerfactoModel):
             appearance_embedding_dim=self.config.appearance_embed_dim,
             implementation=self.config.implementation,
             coarse_to_fine_iters=self.config.coarse_to_fine_iters,
+        )
+        # camera optimizer
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cuda"
         )
