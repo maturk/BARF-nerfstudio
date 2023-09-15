@@ -19,20 +19,19 @@ Implementation of vanilla nerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Type, Optional
+from typing import Dict, List, Optional, Tuple, Type
 
 import numpy as np
 import torch
-from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
-from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
-from barf.utils.colormaps import apply_uncertainty_colormap
+from barf.barf_field import BARFFieldFreq, BARFGradientHashField, BARFHashField
+from barf.utils.encodings import BARFEncodingFreq
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
-from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
@@ -40,7 +39,10 @@ from nerfstudio.engine.callbacks import (
 )
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
-from nerfstudio.model_components.losses import MSELoss
+from nerfstudio.model_components.losses import (
+    MSELoss,
+    scale_gradients_by_distance_squared,
+)
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
@@ -54,41 +56,6 @@ from nerfstudio.utils.writer import GLOBAL_BUFFER
 
 
 # BARF Configs
-@dataclass
-class BARFHashModelConfig(NerfactoModelConfig):
-    """BARF hashgrid config"""
-
-    _target: Type = field(default_factory=lambda: BARFHashModel)
-
-    use_gradient_scaling: bool = False
-    """Use gradient scaler where the gradients are lower for points closer to the camera."""
-    use_uncertainty_loss: bool = False
-    """Predict uncertainty (variance) for render output"""
-    disable_scene_contraction: bool = False
-    """Whether to disable scene contraction or not."""
-    use_average_appearance_embedding: bool = False
-    """Whether to use average appearance embedding or zeros for inference."""
-    predict_normals: bool = False
-    """Whether to predict normals or not."""
-
-    # BARF Nerfacto Configs
-    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
-    """Config of the camera optimizer to use"""
-    bundle_adjust: bool = True
-    """Coarse to fine hash grid frequency optimization"""
-    coarse_to_fine_iters: tuple = (0.0, 0.1)
-    """Iterations (as a percentage of total iterations) at which c2f hash grid freq optimization starts and ends.
-    Linear interpolation between (start, end) and full activation from end onwards."""
-
-
-@dataclass
-class BARFGradientHashModelConfig(NerfactoModelConfig):
-    """BARF gradient modulated hashgrid config"""
-
-    _target: Type = field(default_factory=lambda: BARFGradientHashModel)
-
-    coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 3000)
-    """(start, end) iterations at which gradients of hash grid levels are modulated. Linear interpolation between (start, end) and full activation from end onwards."""
 
 
 @dataclass
@@ -107,10 +74,39 @@ class BARFFreqModelConfig(ModelConfig):
     Linear interpolation between (start, end) and full activation from end onwards."""
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
     """Config of the camera optimizer to use"""
-    freeze_fields: Optional[List[float]]  = None
+    freeze_fields: Optional[List[float]] = None
     """ List of windows (as a percentage of total iterations) where the fields will not be trained. """
-    freeze_cam: Optional[List[float]]  = None
+    freeze_cam: Optional[List[float]] = None
     """ List of windows (as a percentage of total iterations) where the camera optimizer will not be trained. """
+
+
+@dataclass
+class BARFHashModelConfig(NerfactoModelConfig):
+    """BARF hashgrid config"""
+
+    _target: Type = field(default_factory=lambda: BARFHashModel)
+
+    use_average_appearance_embedding: bool = False
+    """Whether to use average appearance embedding or zeros for inference."""
+    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
+    """Config of the camera optimizer to use"""
+    bundle_adjust: bool = True
+    """Coarse to fine hash grid frequency optimization"""
+    coarse_to_fine_iters: tuple = (0.0, 0.1)
+    """Iterations (as a percentage of total iterations) at which c2f hash grid freq optimization starts and ends.
+    Linear interpolation between (start, end) and full activation from end onwards."""
+
+
+@dataclass
+class BARFGradientHashModelConfig(NerfactoModelConfig):
+    """BARF gradient modulated hashgrid config"""
+
+    _target: Type = field(default_factory=lambda: BARFGradientHashModel)
+
+    coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 1000)
+    """(start, end) iterations at which gradients of hash grid levels are modulated. Linear interpolation between (start, end) and full activation from end onwards."""
+    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
+    """Config of the camera optimizer to use"""
 
 
 # BARF models
@@ -120,6 +116,8 @@ class BARFFreqModel(Model):
     Args:
         config: Basic BARF configuration to instantiate model
     """
+
+    config: BARFFreqModelConfig
 
     def __init__(
         self,
@@ -155,13 +153,6 @@ class BARFFreqModel(Model):
             coarse_to_fine_iters=self.config.coarse_to_fine_iters,
             include_input=True,
         )
-
-        # position_encoding = NeRFEncoding(
-        #     in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
-        # )
-        # direction_encoding = NeRFEncoding(
-        #     in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
-        # )
 
         self.field_coarse = BARFFieldFreq(
             position_encoding=position_encoding,
@@ -201,17 +192,15 @@ class BARFFreqModel(Model):
         self.freeze_fields = []
         if self.config.freeze_fields is not None:
             for i in range(0, len(self.config.freeze_fields), 2):
-                assert freeze_fields[i] < freeze_fields[i+1]
-                self.freeze_fields.append((freeze_fields[i], freeze_fields[i+1]))
-        
+                assert freeze_fields[i] < freeze_fields[i + 1]
+                self.freeze_fields.append((freeze_fields[i], freeze_fields[i + 1]))
+
         assert self.config.freeze_cam is None or len(self.config.freeze_cam) % 2 == 0
         self.freeze_cam = []
         if self.config.freeze_cam is not None:
             for i in range(0, len(self.config.freeze_cam), 2):
-                assert self.config.freeze_cam[i] < self.config.freeze_cam[i+1]
-                self.freeze_cam.append((self.config.freeze_cam[i], self.config.freeze_cam[i+1]))
-
-
+                assert self.config.freeze_cam[i] < self.config.freeze_cam[i + 1]
+                self.freeze_cam.append((self.config.freeze_cam[i], self.config.freeze_cam[i + 1]))
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -232,7 +221,7 @@ class BARFFreqModel(Model):
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
-        progress : float = self._step / GLOBAL_BUFFER.get("max_iter", 0)
+        progress: float = self._step / GLOBAL_BUFFER.get("max_iter", 0)
         for freeze_window in self.freeze_fields:
             if progress >= freeze_window[0] and progress <= freeze_window[1]:
                 for param in self.field_coarse.parameters():
@@ -247,7 +236,7 @@ class BARFFreqModel(Model):
                 if self.config.fine_field_enabled:
                     for param in self.field_fine.parameters():
                         param.requires_grad = True
-        
+
         for freeze_window in self.freeze_cam:
             if progress >= freeze_window[0] and progress <= freeze_window[1]:
                 for param in self.camera_optimizer.parameters():
@@ -257,8 +246,8 @@ class BARFFreqModel(Model):
                 for param in self.camera_optimizer.parameters():
                     param.requires_grad = True
 
-        if self.training:
-           self.camera_optimizer.apply_to_raybundle(ray_bundle)
+        if self.training and hasattr(self.camera_optimizer, "apply_to_raybundle"):
+            self.camera_optimizer.apply_to_raybundle(ray_bundle)
         outputs = {}
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
             raise ValueError("populate_fields() must be called before get_outputs")
@@ -310,7 +299,7 @@ class BARFFreqModel(Model):
         """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
         self._step = step
         # self._steps_since_update += 1
-            
+
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -338,14 +327,6 @@ class BARFFreqModel(Model):
 
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
         return loss_dict
-
-    # def get_metrics_dict(self, outputs, batch):
-    #     metrics_dict = {}
-    #     image = batch["image"].to(self.device)
-    #     metrics_dict["psnr"] = self.psnr(outputs["rgb"], image)
-    #     if self.training:
-    #         metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
-    #     return metrics_dict
 
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
@@ -444,7 +425,7 @@ class BARFHashModel(NerfactoModel):
         )
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
-           num_cameras=self.num_train_data, device="cuda"
+            num_cameras=self.num_train_data, device="cuda"
         )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
@@ -453,14 +434,14 @@ class BARFHashModel(NerfactoModel):
         param_groups["fields"] = list(self.field.parameters())
         camera_opt_params = list(self.camera_optimizer.parameters())
         if self.config.camera_optimizer.mode != "off":
-           assert len(camera_opt_params) > 0
-           param_groups["camera_opt"] = camera_opt_params
+            assert len(camera_opt_params) > 0
+            param_groups["camera_opt"] = camera_opt_params
         else:
-           assert len(camera_opt_params) == 0
+            assert len(camera_opt_params) == 0
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
-        if self.training:
+        if self.training and hasattr(self.camera_optimizer, "apply_to_raybundle"):
             self.camera_optimizer.apply_to_raybundle(ray_bundle)
         ray_samples: RaySamples
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
@@ -585,3 +566,46 @@ class BARFGradientHashModel(NerfactoModel):
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cuda"
         )
+
+    def get_training_callbacks(
+        self, training_callback_attributes: TrainingCallbackAttributes
+    ) -> List[TrainingCallback]:
+        callbacks = []
+
+        if self.config.use_proposal_weight_anneal:
+            # anneal the weights of the proposal network before doing PDF sampling
+            N = self.config.proposal_weights_anneal_max_num_iters
+
+            def set_anneal(step):
+                # https://arxiv.org/pdf/2111.12077.pdf eq. 18
+                train_frac = np.clip(step / N, 0, 1)
+
+                def bias(x, b):
+                    return b * x / ((b - 1) * x + 1)
+
+                anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
+                self.proposal_sampler.set_anneal(anneal)
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=set_anneal,
+                )
+            )
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=self.proposal_sampler.step_cb,
+                )
+            )
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=self.field.step_cb,
+                )
+            )
+        return callbacks
