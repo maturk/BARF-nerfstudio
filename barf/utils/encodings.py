@@ -2,19 +2,15 @@
 Encoding functions
 """
 
-import itertools
-from abc import abstractmethod
-from typing import Literal, Optional, Sequence, Tuple
+from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 
-from nerfstudio.field_components.base_field_component import FieldComponent
 from nerfstudio.field_components.encodings import Encoding
-from nerfstudio.utils.math import components_from_spherical_harmonics, expected_sin
+from nerfstudio.utils.math import expected_sin
 from nerfstudio.utils.printing import print_tcnn_speed_warning
 from nerfstudio.utils.writer import GLOBAL_BUFFER
 

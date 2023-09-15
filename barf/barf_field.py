@@ -7,7 +7,7 @@ from typing import Dict, Literal, Optional, Tuple
 
 import torch
 from barf.utils.encodings import ScaledHashEncoding
-from jaxtyping import Float, Int, Shaped
+from jaxtyping import Float, Shaped
 from torch import Tensor, nn
 
 from nerfstudio.cameras.rays import RaySamples
@@ -16,7 +16,6 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import (
     Encoding,
-    HashEncoding,
     Identity,
     NeRFEncoding,
     SHEncoding,
@@ -371,6 +370,7 @@ class BARFGradientHashField(Field):
         coarse_to_fine_iters: Optional[Tuple[int, int]] = None,
     ) -> None:
         super().__init__()
+        self.step = 0
 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
@@ -475,9 +475,6 @@ class BARFGradientHashField(Field):
             implementation=implementation,
         )
 
-    def set_step(self, step: int) -> None:
-        self.mlp_base_grid.set_step(step)
-
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
         if self.spatial_distortion is not None:
@@ -577,3 +574,7 @@ class BARFGradientHashField(Field):
         outputs.update({FieldHeadNames.RGB: rgb})
 
         return outputs
+
+    def step_cb(self, step):
+        self.mlp_base_grid.set_step(step)
+        self.step = step
