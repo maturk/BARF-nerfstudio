@@ -1,13 +1,11 @@
-from easydict import EasyDict
-from dataclasses import dataclass, field
 import imageio
 import matplotlib.pyplot as plt
 import os
 import torch
-from typing import Any, Literal, Optional, Type, List, Dict
+from typing import Any, Optional, List, Dict
 import re
 
-from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.data.datasets.base_dataset import InputDataset
 import nerfstudio.utils.poses as pose_utils
 
@@ -28,21 +26,23 @@ def collect_init_camera_poses_for_dataset(dataset: Optional[InputDataset]) -> Li
         image_filename = image_filenames[idx]
         # Create a tensor with the camera index.
         transform = cameras.camera_to_worlds[idx]
-        transform = torch.cat([transform, torch.tensor([0,0,0,1], dtype=torch.float32, device=transform.device).reshape(1,4)], dim=0).tolist()
+        transform = torch.cat(
+            [transform, torch.tensor([0, 0, 0, 1], dtype=torch.float32, device=transform.device).reshape(1, 4)], dim=0
+        ).tolist()
         frames.append(
             {
                 "file_path": str(image_filename),
                 "transform_matrix": transform,
             }
         )
-    camera_angle_x = 2 * torch.atan(cameras.width/ (cameras.fx * 2))[0].item()
-    transforms = {
-        "camera_angle_x": camera_angle_x,
-        "frames": frames
-        }
+    camera_angle_x = 2 * torch.atan(cameras.width / (cameras.fx * 2))[0].item()
+    transforms = {"camera_angle_x": camera_angle_x, "frames": frames}
     return transforms
 
-def collect_camera_poses_for_dataset(dataset: Optional[InputDataset], optimizer : Optional[CameraOptimizer]) -> List[Dict[str, Any]]:
+
+def collect_camera_poses_for_dataset(
+    dataset: Optional[InputDataset], optimizer: Optional[CameraOptimizer]
+) -> List[Dict[str, Any]]:
     """Collects rescaled, translated and optimised camera poses for a dataset.
 
     Args:
@@ -65,12 +65,16 @@ def collect_camera_poses_for_dataset(dataset: Optional[InputDataset], optimizer 
         image_filename = image_filenames[idx]
         # Create a tensor with the camera index.
         transform = cameras.camera_to_worlds[idx]
-        transform = torch.cat([transform, torch.tensor([0,0,0,1], dtype=torch.float32, device=transform.device).reshape(1,4)])
-        if(optimizer is not None):
+        transform = torch.cat(
+            [transform, torch.tensor([0, 0, 0, 1], dtype=torch.float32, device=transform.device).reshape(1, 4)]
+        )
+        if optimizer is not None:
             adjustment = optimizer(torch.tensor([idx], dtype=torch.long)).to(transform.device)
             adjustment = adjustment.squeeze()
-            adjustment = torch.cat([adjustment, torch.tensor([0,0,0,1], dtype=torch.float32, device=transform.device).reshape(1,4)])
-            
+            adjustment = torch.cat(
+                [adjustment, torch.tensor([0, 0, 0, 1], dtype=torch.float32, device=transform.device).reshape(1, 4)]
+            )
+
             # transform = torch.matmul(transform, adjustment).tolist()
             transform = pose_utils.multiply(transform, adjustment).tolist()
         frames.append(
@@ -79,11 +83,8 @@ def collect_camera_poses_for_dataset(dataset: Optional[InputDataset], optimizer 
                 "transform_matrix": transform,
             }
         )
-    camera_angle_x = 2 * torch.atan(cameras.width/ (cameras.fx * 2))[0].item()
-    transforms = {
-        "camera_angle_x": camera_angle_x,
-        "frames": frames
-        }
+    camera_angle_x = 2 * torch.atan(cameras.width / (cameras.fx * 2))[0].item()
+    transforms = {"camera_angle_x": camera_angle_x, "frames": frames}
     return transforms
 
 
@@ -134,6 +135,7 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
 
     plt.close("all")
 
+
 def create_pose_gif(poses_dir: str, duration=0.1):
     """
     Create a GIF from a folder of PNG images.
@@ -148,7 +150,9 @@ def create_pose_gif(poses_dir: str, duration=0.1):
     filenames = [f for f in os.listdir(str(poses_dir)) if f.endswith(".png")]
 
     # Sort strings containing numbers in a way that '2' comes before '10'.
-    natural_sort_key = lambda s: [int(text) if text.isdigit() else text.lower() for text in re.split("([0-9]+)", s)]
+    def natural_sort_key(s):
+        return [(int(text) if text.isdigit() else text.lower()) for text in re.split("([0-9]+)", s)]
+
     filenames = sorted(filenames, key=natural_sort_key)
 
     # Read each file and append to a list

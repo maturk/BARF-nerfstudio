@@ -1,12 +1,11 @@
 import typing
-import os
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Type
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.data.datamanagers.base_datamanager import (
     DataManagerConfig,
     VanillaDataManager,
@@ -16,8 +15,6 @@ from torch.cuda.amp.grad_scaler import GradScaler
 
 from nerfstudio.configs.base_config import PrintableConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
-from nerfstudio.engine.optimizers import AdamOptimizerConfig
-from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.pipelines.base_pipeline import (
     VanillaPipeline,
@@ -25,21 +22,23 @@ from nerfstudio.pipelines.base_pipeline import (
 )
 from nerfstudio.utils import profiler
 from barf.barf import BARFFreqModelConfig
-from barf.utils.exporter_utils import save_poses, create_pose_gif 
+from barf.utils.exporter_utils import save_poses, create_pose_gif
+
 
 @dataclass
 class PosesConfig(PrintableConfig):
-    save_poses: bool = True,
+    save_poses: bool = (True,)
     """save poses for visualization"""
-    cam_depth: float = 1.
+    cam_depth: float = 1.0
     """camera depth for visualization"""
     xlim: tuple = (-3, 3)
     """x-axis limit for visualization"""
     ylim: tuple = (-3, 3)
     """y-axis limit for visualization"""
-    zlim : tuple = (-3, 2.4)
+    zlim: tuple = (-3, 2.4)
     """z-axis limit for visualization"""
-    poses_dir : str = "[IGNORE]: set_by_trainer.py"
+    poses_dir: str = "[IGNORE]: set_by_trainer.py"
+
 
 @dataclass
 class BARFPipelineConfig(VanillaPipelineConfig):
@@ -49,7 +48,7 @@ class BARFPipelineConfig(VanillaPipelineConfig):
     """target class to instantiate"""
     datamanager: DataManagerConfig = VanillaDataManagerConfig(
         dataparser=NerfstudioDataParserConfig(),
-        train_num_rays_per_batch=1024, 
+        train_num_rays_per_batch=1024,
         eval_num_rays_per_batch=1024,
     )
     """specifies the datamanager config"""
@@ -59,10 +58,8 @@ class BARFPipelineConfig(VanillaPipelineConfig):
         ),
     )
     """specifies the model config"""
-    
+
     vis_config: PosesConfig = PosesConfig()
-
-
 
 
 class BARFPipeline(VanillaPipeline):
@@ -98,7 +95,7 @@ class BARFPipeline(VanillaPipeline):
             self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
             dist.barrier(device_ids=[local_rank])
 
-        self.poses_dir = "" # directory to save poses for visualization is set by trainer.py (must fix though)
+        self.poses_dir = ""  # directory to save poses for visualization is set by trainer.py (must fix though)
 
     @profiler.time_function
     def get_eval_image_metrics_and_images(self, step: int):
@@ -114,9 +111,13 @@ class BARFPipeline(VanillaPipeline):
         metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
 
         assert "camera_opt_translation" not in metrics_dict
-        metrics_dict["camera_opt_translation"] = torch.norm(self.model.camera_optimizer.pose_adjustment[:, :3], dim=-1).mean()
+        metrics_dict["camera_opt_translation"] = torch.norm(
+            self.model.camera_optimizer.pose_adjustment[:, :3], dim=-1
+        ).mean()
         assert "camera_opt_rotation" not in metrics_dict
-        metrics_dict["camera_opt_rotation"] = torch.norm(self.model.camera_optimizer.pose_adjustment[:, 3:], dim=-1).mean()
+        metrics_dict["camera_opt_rotation"] = torch.norm(
+            self.model.camera_optimizer.pose_adjustment[:, 3:], dim=-1
+        ).mean()
 
         assert "image_idx" not in metrics_dict
         metrics_dict["image_idx"] = image_idx
@@ -129,5 +130,3 @@ class BARFPipeline(VanillaPipeline):
 
         self.train()
         return metrics_dict, images_dict
-
-   
