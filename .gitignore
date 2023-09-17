@@ -2,6 +2,8 @@ outputs
 data
 datasets
 experiments
+ubarf
+unerf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

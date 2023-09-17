@@ -5,9 +5,6 @@ import torch.nn.functional as torch_F
 import collections
 from easydict import EasyDict as edict
 
-from barf.visualizer.util import log, debug
-
-
 class Pose:
     """
     A class of operations on camera poses (PyTorch tensors with shape [...,3,4])

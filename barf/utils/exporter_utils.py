@@ -4,6 +4,7 @@ import imageio
 import matplotlib.pyplot as plt
 import os
 import torch
+import numpy as np
 from typing import Any, Literal, Optional, Type, List, Dict
 import re
 
@@ -131,8 +132,10 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
         os.makedirs(poses_dir)
 
     plot_save_poses_blender(vis_config, fig, train_opt_poses, train_init_frames, path=poses_dir, ep=step)
-
+    fig.canvas.draw()
+    fig_as_np_array = np.array(fig.canvas.renderer.buffer_rgba())
     plt.close("all")
+    return fig_as_np_array
 
 def create_pose_gif(poses_dir: str, duration=0.1):
     """

@@ -124,7 +124,8 @@ class BARFPipeline(VanillaPipeline):
         metrics_dict["num_rays"] = len(camera_ray_bundle)
 
         if self.config.vis_config.save_poses:
-            save_poses(step, self.config.vis_config, self.datamanager.train_dataset, self.model.camera_optimizer)
+            fig_as_np_array = save_poses(step, self.config.vis_config, self.datamanager.train_dataset, self.model.camera_optimizer)
+            images_dict["poses"] = torch.Tensor(fig_as_np_array)
             create_pose_gif(self.config.vis_config.poses_dir)
 
         self.train()

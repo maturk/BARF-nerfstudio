@@ -15,12 +15,14 @@ dependencies = [
     "nerfstudio>=0.2.0",
     "colour-checker-detection",
     "ipdb",
+    "equilib",
 ]
 
 [tool.setuptools.packages.find]
-include = ["barf*"]
+include = ["barf*", "ubarf*"]
 
 [project.entry-points.'nerfstudio.method_configs']
 barf-freq = 'barf.barf_config:barf_freq_method'
 barf-hash = 'barf.barf_config:barf_hash_method'
 barf-grad = 'barf.barf_config:barf_grad_hash_method'
+ubarf-freq = 'ubarf.ubarf_config:ubarf_freq_method'

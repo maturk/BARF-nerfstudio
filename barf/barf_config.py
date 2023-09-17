@@ -19,8 +19,6 @@ from nerfstudio.plugins.types import MethodSpecification
 from barf.barf_pipeline import BARFPipelineConfig
 from barf.barf import BARFFreqModelConfig, BARFHashModelConfig, BARFGradientHashModelConfig
 
-max_num_iterations = 200000
-
 barf_freq_method = MethodSpecification(
     config=TrainerConfig(
         method_name="barf-freq",
@@ -40,9 +38,7 @@ barf_freq_method = MethodSpecification(
                 #     mode="SO3xR3",
                 # ),
             ),
-            model=BARFFreqModelConfig(
-                camera_optimizer=CameraOptimizerConfig(mode="SO3xR3"),
-            ),
+            model=BARFFreqModelConfig(),
         ),
         optimizers={
             "fields": {

@@ -23,9 +23,7 @@ from typing import Dict, List, Tuple, Type, Optional
 
 import numpy as np
 import torch
-from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
-from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
-from barf.utils.colormaps import apply_uncertainty_colormap
+
 from torch.nn import Parameter
 from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
@@ -52,8 +50,32 @@ from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 from nerfstudio.utils.writer import GLOBAL_BUFFER
 
+from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
+from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
+from barf.utils.colormaps import apply_uncertainty_colormap
 
 # BARF Configs
+@dataclass
+class BARFFreqModelConfig(ModelConfig):
+    """BARF Model Config"""
+
+    _target: Type = field(default_factory=lambda: BARFFreqModel)
+    num_coarse_samples: int = 128
+    """Number of samples in coarse field evaluation"""
+    num_importance_samples: int = 128
+    """Number of samples in fine field evaluation"""
+    fine_field_enabled: bool = False
+    """Whether or not to use a fine network"""
+    coarse_to_fine_iters: tuple = (0.1, 0.5)
+    """Iterations (as a percentage of total iterations) at which c2f freq optimization starts and ends.
+    Linear interpolation between (start, end) and full activation from end onwards."""
+    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
+    """Config of the camera optimizer to use"""
+    freeze_fields: Optional[List[float]]  = None
+    """ List of windows (as a percentage of total iterations) where the fields will not be trained. """
+    freeze_cam: Optional[List[float]]  = None
+    """ List of windows (as a percentage of total iterations) where the camera optimizer will not be trained. """
+
 @dataclass
 class BARFHashModelConfig(NerfactoModelConfig):
     """BARF hashgrid config"""
@@ -89,29 +111,6 @@ class BARFGradientHashModelConfig(NerfactoModelConfig):
 
     coarse_to_fine_iters: Optional[Tuple[int, int]] = (0, 3000)
     """(start, end) iterations at which gradients of hash grid levels are modulated. Linear interpolation between (start, end) and full activation from end onwards."""
-
-
-@dataclass
-class BARFFreqModelConfig(ModelConfig):
-    """BARF Model Config"""
-
-    _target: Type = field(default_factory=lambda: BARFFreqModel)
-    num_coarse_samples: int = 128
-    """Number of samples in coarse field evaluation"""
-    num_importance_samples: int = 128
-    """Number of samples in fine field evaluation"""
-    fine_field_enabled: bool = True
-    """Whether or not to use a fine network"""
-    coarse_to_fine_iters: tuple = (0.1, 0.5)
-    """Iterations (as a percentage of total iterations) at which c2f hash grid freq optimization starts and ends.
-    Linear interpolation between (start, end) and full activation from end onwards."""
-    camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig(mode="SO3xR3")
-    """Config of the camera optimizer to use"""
-    freeze_fields: Optional[List[float]]  = None
-    """ List of windows (as a percentage of total iterations) where the fields will not be trained. """
-    freeze_cam: Optional[List[float]]  = None
-    """ List of windows (as a percentage of total iterations) where the camera optimizer will not be trained. """
-
 
 # BARF models
 class BARFFreqModel(Model):
