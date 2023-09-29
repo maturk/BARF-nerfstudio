@@ -110,14 +110,15 @@ class BARFPipeline(VanillaPipeline):
         outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
         metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
 
-        assert "camera_opt_translation" not in metrics_dict
-        metrics_dict["camera_opt_translation"] = torch.norm(
-            self.model.camera_optimizer.pose_adjustment[:, :3], dim=-1
-        ).mean()
-        assert "camera_opt_rotation" not in metrics_dict
-        metrics_dict["camera_opt_rotation"] = torch.norm(
-            self.model.camera_optimizer.pose_adjustment[:, 3:], dim=-1
-        ).mean()
+        if self.config.model.camera_optimizer.mode=="SO3xR3" or self.config.model.camera_optimizer.mode=="SE3":
+            assert "camera_opt_translation" not in metrics_dict
+            metrics_dict["camera_opt_translation"] = torch.norm(
+                self.model.camera_optimizer.pose_adjustment[:, :3], dim=-1
+            ).mean()
+            assert "camera_opt_rotation" not in metrics_dict
+            metrics_dict["camera_opt_rotation"] = torch.norm(
+                self.model.camera_optimizer.pose_adjustment[:, 3:], dim=-1
+            ).mean()
 
         assert "image_idx" not in metrics_dict
         metrics_dict["image_idx"] = image_idx
