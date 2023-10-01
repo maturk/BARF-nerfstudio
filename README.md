@@ -54,8 +54,7 @@ ns-train barf-grad --data [DATA]
         self.optimizers = self.setup_optimizers()
         ...
 ```
-*  
-the
+*  This codebase currently operates out of the `justin/camera_opt_refactor` branch of nerfstudio`. Once that branch gets merged into main, we will update the codevbase to remove warnings to make sure it is compatible with the main branch of nerfstudio.
 # Gallery
 Photos/results here
 
