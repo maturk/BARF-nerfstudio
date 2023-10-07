@@ -2,19 +2,15 @@
 Encoding functions
 """
 
-import itertools
-from abc import abstractmethod
-from typing import Literal, Optional, Sequence, Tuple
+from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 
-from nerfstudio.field_components.base_field_component import FieldComponent
 from nerfstudio.field_components.encodings import Encoding
-from nerfstudio.utils.math import components_from_spherical_harmonics, expected_sin
+from nerfstudio.utils.math import expected_sin
 from nerfstudio.utils.printing import print_tcnn_speed_warning
 from nerfstudio.utils.writer import GLOBAL_BUFFER
 
@@ -68,6 +64,7 @@ class BARFEncodingFreq(Encoding):
         in_tensor: Shaped[Tensor, "bs input_dim"],
         step: int,
         covs: Optional[Shaped[Tensor, "bs input_dim input_dim"]] = None,
+        custom_weights: Optional[torch.Tensor] = None
     ) -> Shaped[Tensor, "bs output_dim"]:
         """Calculates NeRF encoding. If covariances are provided the encodings will be integrated as proposed
             in mip-NeRF.
@@ -78,19 +75,24 @@ class BARFEncodingFreq(Encoding):
         Returns:
             Output values will be between -1 and 1
         """
-        scaled_in_tensor = 2 * torch.pi * in_tensor  # scale to [0, 2pi]
+        self.max_iters = GLOBAL_BUFFER.get("max_iter", 0)
+        assert self.max_iters > 0, "max_iter not set in global buffer"
+
+        scaled_in_tensor = torch.pi * in_tensor 
         freqs = 2 ** torch.linspace(self.min_freq, self.max_freq, self.num_frequencies).to(in_tensor.device)
         # [..., "input_dim", "num_scales"]
         scaled_inputs = scaled_in_tensor[..., None] * freqs
         # [..., "input_dim" * "num_scales"]
         scaled_inputs = scaled_inputs.view(*scaled_inputs.shape[:-2], -1)
 
-        start, end = self.coarse_to_fine_iters
-        self.max_iters = GLOBAL_BUFFER.get("max_iter", 0)
-        progress = step / self.max_iters
-        alpha = (progress - start) / (end - start) * self.num_frequencies
-        k = torch.arange(self.num_frequencies, dtype=torch.float32, device=in_tensor.device)
-        weights = (1 - (alpha - k).clamp_(min=0, max=1).mul_(torch.pi).cos_()) / 2
+        if custom_weights is None:
+            start, end = self.coarse_to_fine_iters
+            progress = step / self.max_iters
+            alpha = (progress - start) / (end - start) * self.num_frequencies
+            k = torch.arange(self.num_frequencies, dtype=torch.float32, device=in_tensor.device)
+            weights = (1 - (alpha - k).clamp_(min=0, max=1).mul_(torch.pi).cos_()) / 2
+        else:
+            weights = custom_weights
 
         if covs is None:
             encoded_inputs = torch.sin(torch.cat([scaled_inputs, scaled_inputs + torch.pi / 2.0], dim=-1))
@@ -111,6 +113,50 @@ class BARFEncodingFreq(Encoding):
 
         return encoded_inputs
 
+class UncertaintyDrivenBARFEncodingFreq(BARFEncodingFreq):
+    
+    def __init__(self, *args, uncertainty_max_value=900, activation_mode="linear", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.uncertainty_max_value = uncertainty_max_value
+        self.activation_mode = activation_mode
+
+    def _linear_activation(self, uncertainty):
+        """Linear activation of frequencies based on uncertainty."""
+        return uncertainty / self.uncertainty_max_value
+
+    def _cosine_activation(self, uncertainty):
+        """Cosine activation of frequencies based on uncertainty."""
+        return (1 - math.cos(math.pi * uncertainty / self.uncertainty_max_value)) / 2
+
+    def forward(self, in_tensor, step, covs=None, pixel_coords=None):
+        # Retrieve the uncertainty value for the pixel from the global map
+        import ipdb; ipdb.set_trace()
+        if pixel_coords is not None:
+            # Ensure the batch sizes match
+            assert in_tensor.shape[0] == len(pixel_coords), (
+                f"The batch size of in_tensor ({in_tensor.shape[0]}) must match the length of pixel_coords ({len(pixel_coords)})."
+            )
+            # Ensure pixel_coords represent (x,y) coordinates
+            assert all(len(coord) == 2 for coord in pixel_coords), (
+                "Each entry in pixel_coords must have exactly 2 elements representing (x,y) coordinates."
+            )
+            
+            uncertainty = UncertaintyRenderer.uncertainty_map.get(tuple(pixel_coords.tolist()), 0)
+        else:
+            uncertainty = 0
+        
+        # Calculate the number of activated frequencies based on the uncertainty
+        if self.activation_mode == "linear":
+            alpha = self._linear_activation(uncertainty)
+        elif self.activation_mode == "cosine":
+            alpha = self._cosine_activation(uncertainty)
+        else:
+            raise ValueError(f"Unknown activation mode: {self.activation_mode}")
+        
+        k = torch.arange(self.num_frequencies, dtype=torch.float32, device=in_tensor.device)
+        custom_weights = (1 - (alpha - k).clamp_(min=0, max=1).mul_(torch.pi).cos_()) / 2
+
+        return super().forward(in_tensor, step, covs, custom_weights=custom_weights)
 
 class _HashGradientScaler(torch.autograd.Function):  # typing: ignore
     """

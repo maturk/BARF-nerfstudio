@@ -7,7 +7,7 @@ from typing import Dict, Literal, Optional, Tuple
 
 import torch
 from barf.utils.encodings import ScaledHashEncoding
-from jaxtyping import Float, Int, Shaped
+from jaxtyping import Float, Shaped
 from torch import Tensor, nn
 
 from nerfstudio.cameras.rays import RaySamples
@@ -16,7 +16,6 @@ from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import (
     Encoding,
-    HashEncoding,
     Identity,
     NeRFEncoding,
     SHEncoding,
@@ -48,6 +47,7 @@ class BARFFieldFreq(Field):
         head_mlp_num_layers: int = 2,
         head_mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
+        density_noise_reg : float = 0.0,
         # field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
         # use_integrated_encoding: bool = False,
         # spatial_distortion: Optional[SpatialDistortion] = None,
@@ -73,6 +73,7 @@ class BARFFieldFreq(Field):
             layer_width=head_mlp_layer_width,
             out_activation=nn.ReLU(),
         )
+        self.density_noise_reg = density_noise_reg
 
         self.field_head_density = DensityFieldHead(in_dim=self.mlp_base.get_out_dim())
         self.field_head_rgb = RGBFieldHead(in_dim=self.mlp_head.get_out_dim())
@@ -104,6 +105,8 @@ class BARFFieldFreq(Field):
         """Computes and returns the densities."""
         encoded_xyz = self.position_encoding(ray_samples.frustums.get_positions(), step)
         base_mlp_out = self.mlp_base(encoded_xyz)
+        # if density_noise_reg != 0:
+        #     density_feature = base_mlp_out  
         density = self.field_head_density(base_mlp_out)
         return density, base_mlp_out
 
@@ -371,6 +374,7 @@ class BARFGradientHashField(Field):
         coarse_to_fine_iters: Optional[Tuple[int, int]] = None,
     ) -> None:
         super().__init__()
+        self.step = 0
 
         self.register_buffer("aabb", aabb)
         self.geo_feat_dim = geo_feat_dim
@@ -475,9 +479,6 @@ class BARFGradientHashField(Field):
             implementation=implementation,
         )
 
-    def set_step(self, step: int) -> None:
-        self.mlp_base_grid.set_step(step)
-
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
         if self.spatial_distortion is not None:
@@ -577,3 +578,7 @@ class BARFGradientHashField(Field):
         outputs.update({FieldHeadNames.RGB: rgb})
 
         return outputs
+
+    def step_cb(self, step):
+        self.mlp_base_grid.set_step(step)
+        self.step = step

@@ -1,19 +1,14 @@
 """
-n2n configuration file.
+BARF config files.
 """
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManagerConfig
-from nerfstudio.data.dataparsers.instant_ngp_dataparser import InstantNGPDataParserConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
-from nerfstudio.data.dataparsers.blender_dataparser import BlenderDataParserConfig
-from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig
+from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.engine.trainer import TrainerConfig
-from nerfstudio.models.nerfacto import NerfactoModelConfig
-from nerfstudio.models.vanilla_nerf import VanillaModelConfig
-from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.plugins.types import MethodSpecification
 
 from barf.barf_pipeline import BARFPipelineConfig
@@ -46,8 +41,11 @@ barf_freq_method = MethodSpecification(
                 #   Blender: 5e-4 -> 1e-4
                 #   Real-World: 1e-3 -> 1e-4
                 # Original BARF hyperparameter setting
-                "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4),
+                "optimizer": AdamOptimizerConfig(lr=1e-5, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=1e-6,
+                    max_steps = 200000
+                ),
             },
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
@@ -72,11 +70,6 @@ barf_hash_method = MethodSpecification(
                 dataparser=NerfstudioDataParserConfig(),
                 train_num_rays_per_batch=4096,
                 eval_num_rays_per_batch=4096,
-                # camera_optimizer=CameraOptimizerConfig(  # Blender synthetic data
-                #     mode="SO3xR3",
-                #     optimizer=AdamOptimizerConfig(lr=1e-4, eps=1e-8),
-                #     scheduler=ExponentialDecaySchedulerConfig(lr_final=1e-7),
-                # ),
             ),
             model=BARFHashModelConfig(
                 camera_optimizer=CameraOptimizerConfig(mode="SO3xR3"),
@@ -116,15 +109,10 @@ barf_grad_hash_method = MethodSpecification(
                 dataparser=NerfstudioDataParserConfig(),
                 train_num_rays_per_batch=4096,
                 eval_num_rays_per_batch=4096,
-                # camera_optimizer=CameraOptimizerConfig(  # Blender synthetic data
-                    # mode="SO3xR3",
-                    # optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2),
-                    # scheduler=ExponentialDecaySchedulerConfig(lr_final=6e-6, max_steps=200000),
-                # ),
             ),
             model=BARFGradientHashModelConfig(
                 eval_num_rays_per_chunk=1 << 15,
-                camera_optimizer=CameraOptimizerConfig(  
+                camera_optimizer=CameraOptimizerConfig(
                     mode="SO3xR3",
                 ),
             ),

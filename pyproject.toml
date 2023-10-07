@@ -15,7 +15,7 @@ dependencies = [
     "nerfstudio>=0.2.0",
     "colour-checker-detection",
     "ipdb",
-    "equilib",
+    "torchtyping",
 ]
 
 [tool.setuptools.packages.find]
