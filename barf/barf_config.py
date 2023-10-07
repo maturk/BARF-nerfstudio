@@ -24,32 +24,19 @@ barf_freq_method = MethodSpecification(
         pipeline=BARFPipelineConfig(
             datamanager=VanillaDataManagerConfig(
                 dataparser=NerfstudioDataParserConfig(),
-                train_num_rays_per_batch=1024,  # 1024 for Blender, 2048 for Real-World
-                eval_num_rays_per_batch=1024,  # 1024 for Blender, 2048 for Real-World
-                # Camera Pose Learning Rate:
-                #   Blender: 1e-3 -> 1e-5
-                #   Real-World: 3e-3 -> 1e-5
-                # camera_optimizer=CameraOptimizerConfig(  # Blender synthetic data
-                #     mode="SO3xR3",
-                # ),
+                train_num_rays_per_batch=1024,  
+                eval_num_rays_per_batch=1024,
             ),
             model=BARFFreqModelConfig(),
         ),
         optimizers={
             "fields": {
-                # Learning Rate:
-                #   Blender: 5e-4 -> 1e-4
-                #   Real-World: 1e-3 -> 1e-4
-                # Original BARF hyperparameter setting
-                "optimizer": AdamOptimizerConfig(lr=1e-5, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1e-6,
-                    max_steps = 200000
-                ),
+                "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4,max_steps = 200000),
             },
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-8),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-5, max_steps=200000),
             },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
@@ -79,15 +66,15 @@ barf_hash_method = MethodSpecification(
         optimizers={
             "proposal_networks": {
                 "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
             },
             "fields": {
                 "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
             },
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-7, max_steps=5000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-7, max_steps=30000),
             },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
@@ -120,15 +107,15 @@ barf_grad_hash_method = MethodSpecification(
         optimizers={
             "proposal_networks": {
                 "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
             },
             "fields": {
                 "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
             },
             "camera_opt": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4, max_steps=5000),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4, max_steps=30000),
             },
         },
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),

@@ -2,17 +2,14 @@ import imageio
 import matplotlib.pyplot as plt
 import os
 import torch
-<<<<<<< HEAD
 import numpy as np
 from typing import Any, Literal, Optional, Type, List, Dict
-=======
-from typing import Any, Optional, List, Dict
->>>>>>> f60a9870c7bd5c813559a0583e1428be874597af
 import re
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.data.datasets.base_dataset import InputDataset
 import nerfstudio.utils.poses as pose_utils
+from easydict import EasyDict as edict
 
 from barf.visualizer.util_vis import plot_save_poses_blender, camera
 
@@ -117,7 +114,7 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
     train_init_poses = get_all_camera_poses(train_init_frames["frames"])
     # eval_opt_poses = self.get_all_camera_poses(eval_opt_frames["frames"])
     # eval_init_poses = self.get_all_camera_poses(eval_init_frames["frames"])
-    # train_pose_aligned, sim3 = prealign_cameras(vis_config, train_opt_poses, train_init_poses)
+    train_pose_aligned, sim3 = prealign_cameras(train_opt_poses, train_init_poses)
 
     fig = plt.figure(figsize=(5, 5))
     poses_dir = vis_config.poses_dir
@@ -125,13 +122,13 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
     if not os.path.exists(poses_dir):
         os.makedirs(poses_dir)
 
-    plot_save_poses_blender(vis_config, fig, train_opt_poses, train_init_poses, path=poses_dir, ep=step)
+    plot_save_poses_blender(vis_config, fig, train_pose_aligned, train_init_poses, path=poses_dir, ep=step)
     fig.canvas.draw()
     fig_as_np_array = np.array(fig.canvas.renderer.buffer_rgba())
     plt.close("all")
     return fig_as_np_array
 
-def prealign_cameras(vis_config,pose,pose_GT):
+def prealign_cameras(pose,pose_GT):
     # compute 3D similarity transform via Procrustes analysis
     N = pose.shape[0]
     center = torch.zeros(1,1,3,device="cpu")
