@@ -2,8 +2,12 @@ import imageio
 import matplotlib.pyplot as plt
 import os
 import torch
+<<<<<<< HEAD
 import numpy as np
 from typing import Any, Literal, Optional, Type, List, Dict
+=======
+from typing import Any, Optional, List, Dict
+>>>>>>> f60a9870c7bd5c813559a0583e1428be874597af
 import re
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizer
@@ -145,6 +149,7 @@ def prealign_cameras(vis_config,pose,pose_GT):
     t_aligned = (-R_aligned@center_aligned[...,None])[...,0]
     pose_aligned = camera.pose(R=R_aligned,t=t_aligned)
     return pose_aligned,sim3
+
 
 def create_pose_gif(poses_dir: str, duration=0.1):
     """

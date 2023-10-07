@@ -1,6 +1,7 @@
 import typing
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Type
+import os
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -37,8 +38,14 @@ class PosesConfig(PrintableConfig):
     """y-axis limit for visualization"""
     zlim: tuple = (-3, 2.4)
     """z-axis limit for visualization"""
+<<<<<<< HEAD
     poses_dir: str = "[IGNORE]: set_by_trainer.py"
     device: str = "cuda"
+=======
+    # poses_dir: str = "[IGNORE]: set_by_trainer.py"
+    poses_dir: str = os.getcwd() + "/poses" # See issue on README.md for more info.
+
+>>>>>>> f60a9870c7bd5c813559a0583e1428be874597af
 
 
 @dataclass
