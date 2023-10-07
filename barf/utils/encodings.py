@@ -113,51 +113,6 @@ class BARFEncodingFreq(Encoding):
 
         return encoded_inputs
 
-class UncertaintyDrivenBARFEncodingFreq(BARFEncodingFreq):
-    
-    def __init__(self, *args, uncertainty_max_value=900, activation_mode="linear", **kwargs):
-        super().__init__(*args, **kwargs)
-        self.uncertainty_max_value = uncertainty_max_value
-        self.activation_mode = activation_mode
-
-    def _linear_activation(self, uncertainty):
-        """Linear activation of frequencies based on uncertainty."""
-        return uncertainty / self.uncertainty_max_value
-
-    def _cosine_activation(self, uncertainty):
-        """Cosine activation of frequencies based on uncertainty."""
-        return (1 - math.cos(math.pi * uncertainty / self.uncertainty_max_value)) / 2
-
-    def forward(self, in_tensor, step, covs=None, pixel_coords=None):
-        # Retrieve the uncertainty value for the pixel from the global map
-        import ipdb; ipdb.set_trace()
-        if pixel_coords is not None:
-            # Ensure the batch sizes match
-            assert in_tensor.shape[0] == len(pixel_coords), (
-                f"The batch size of in_tensor ({in_tensor.shape[0]}) must match the length of pixel_coords ({len(pixel_coords)})."
-            )
-            # Ensure pixel_coords represent (x,y) coordinates
-            assert all(len(coord) == 2 for coord in pixel_coords), (
-                "Each entry in pixel_coords must have exactly 2 elements representing (x,y) coordinates."
-            )
-            
-            uncertainty = UncertaintyRenderer.uncertainty_map.get(tuple(pixel_coords.tolist()), 0)
-        else:
-            uncertainty = 0
-        
-        # Calculate the number of activated frequencies based on the uncertainty
-        if self.activation_mode == "linear":
-            alpha = self._linear_activation(uncertainty)
-        elif self.activation_mode == "cosine":
-            alpha = self._cosine_activation(uncertainty)
-        else:
-            raise ValueError(f"Unknown activation mode: {self.activation_mode}")
-        
-        k = torch.arange(self.num_frequencies, dtype=torch.float32, device=in_tensor.device)
-        custom_weights = (1 - (alpha - k).clamp_(min=0, max=1).mul_(torch.pi).cos_()) / 2
-
-        return super().forward(in_tensor, step, covs, custom_weights=custom_weights)
-
 class _HashGradientScaler(torch.autograd.Function):  # typing: ignore
     """
     Scales the gradients of hash features based on a provided mask

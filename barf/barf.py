@@ -54,7 +54,6 @@ from nerfstudio.utils.writer import GLOBAL_BUFFER
 
 from barf.barf_field import BARFFieldFreq, BARFHashField, BARFGradientHashField
 from barf.utils.encodings import BARFEncodingFreq, ScaledHashEncoding
-from barf.utils.colormaps import apply_uncertainty_colormap
 
 # BARF Configs
 
