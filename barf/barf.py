@@ -395,7 +395,6 @@ class BARFHashModel(NerfactoModel):
 
     def populate_modules(self):
         super().populate_modules()
-        import ipdb; ipdb.set_trace()
 
         if self.config.disable_scene_contraction:
             scene_contraction = None

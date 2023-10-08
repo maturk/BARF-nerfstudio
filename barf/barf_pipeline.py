@@ -2,6 +2,7 @@ import typing
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Type
 import os
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -128,8 +129,10 @@ class BARFPipeline(VanillaPipeline):
         metrics_dict["num_rays"] = len(camera_ray_bundle)
 
         if self.config.vis_config.save_poses:
-            fig_as_np_array = save_poses(step, self.config.vis_config, self.datamanager.train_dataset, self.model.camera_optimizer)
+            fig_as_np_array, error = save_poses(step, self.config.vis_config, self.datamanager.train_dataset, self.model.camera_optimizer)
             images_dict["poses"] = torch.Tensor(fig_as_np_array)
+            metrics_dict["rotation_error"] = np.rad2deg(error.R.mean().cpu())
+            metrics_dict["translation_error"] = np.rad2deg(error.t.mean())
             create_pose_gif(self.config.vis_config.poses_dir)
 
         self.train()

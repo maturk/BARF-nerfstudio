@@ -114,7 +114,8 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
     train_init_poses = get_all_camera_poses(train_init_frames["frames"])
     # eval_opt_poses = self.get_all_camera_poses(eval_opt_frames["frames"])
     # eval_init_poses = self.get_all_camera_poses(eval_init_frames["frames"])
-    train_pose_aligned, sim3 = prealign_cameras(train_opt_poses, train_init_poses)
+    train_pose_aligned, sim3 = prealign_cameras(pose=train_opt_poses, pose_GT=train_init_poses)
+    error = evaluate_camera_alignment(pose_aligned=train_pose_aligned, pose_GT=train_init_poses)
 
     fig = plt.figure(figsize=(5, 5))
     poses_dir = vis_config.poses_dir
@@ -126,8 +127,9 @@ def save_poses(step: int, vis_config, train_dataset: InputDataset, train_camera_
     fig.canvas.draw()
     fig_as_np_array = np.array(fig.canvas.renderer.buffer_rgba())
     plt.close("all")
-    return fig_as_np_array
+    return fig_as_np_array, error
 
+@torch.no_grad()
 def prealign_cameras(pose,pose_GT):
     # compute 3D similarity transform via Procrustes analysis
     N = pose.shape[0]
@@ -146,6 +148,16 @@ def prealign_cameras(pose,pose_GT):
     t_aligned = (-R_aligned@center_aligned[...,None])[...,0]
     pose_aligned = camera.pose(R=R_aligned,t=t_aligned)
     return pose_aligned,sim3
+
+@torch.no_grad()
+def evaluate_camera_alignment(pose_aligned,pose_GT):
+    # measure errors in rotation and translation
+    R_aligned,t_aligned = pose_aligned.split([3,1],dim=-1)
+    R_GT,t_GT = pose_GT.split([3,1],dim=-1)
+    R_error = camera.rotation_distance(R_aligned,R_GT)
+    t_error = (t_aligned-t_GT)[...,0].norm(dim=-1)
+    error = edict(R=R_error,t=t_error)
+    return error
 
 
 def create_pose_gif(poses_dir: str, duration=0.1):
