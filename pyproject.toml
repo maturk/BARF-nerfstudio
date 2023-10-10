@@ -25,4 +25,3 @@ include = ["barf*", "ubarf*"]
 barf-freq = 'barf.barf_config:barf_freq_method'
 barf-hash = 'barf.barf_config:barf_hash_method'
 barf-grad = 'barf.barf_config:barf_grad_hash_method'
-ubarf-freq = 'ubarf.ubarf_config:ubarf_freq_method'
