@@ -36,12 +36,13 @@ class BARFEncodingFreq(Encoding):
 
     def __init__(
         self,
-        in_dim: int,
-        num_frequencies: int,
-        min_freq_exp: float,
-        max_freq_exp: float,
+        in_dim: int = 3,
+        num_frequencies: int = 10,
+        min_freq_exp: float = 0.0,
+        max_freq_exp: float = 9.0,
         coarse_to_fine_iters: Tuple[float, float] = (0.1, 0.5),
-        include_input: bool = False,
+        include_input: bool = True,
+        **kwargs,
     ) -> None:
         super().__init__(in_dim)
 

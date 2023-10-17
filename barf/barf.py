@@ -190,8 +190,8 @@ class BARFFreqModel(Model):
         self.freeze_fields = []
         if self.config.freeze_fields is not None:
             for i in range(0, len(self.config.freeze_fields), 2):
-                assert freeze_fields[i] < freeze_fields[i + 1]
-                self.freeze_fields.append((freeze_fields[i], freeze_fields[i + 1]))
+                assert self.config.freeze_fields[i] < self.config.freeze_fields[i + 1]
+                self.freeze_fields.append((self.config.freeze_fields[i], self.config.freeze_fields[i + 1]))
 
         assert self.config.freeze_cam is None or len(self.config.freeze_cam) % 2 == 0
         self.freeze_cam = []
@@ -205,6 +205,7 @@ class BARFFreqModel(Model):
         if self.field_coarse is None or (self.config.fine_field_enabled and self.field_fine is None):
             raise ValueError("populate_fields() must be called before get_param_groups")
         if self.config.fine_field_enabled:
+            assert self.field_fine is not None, "fine field must be initialized"
             param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
         else:
             param_groups["fields"] = list(self.field_coarse.parameters())
@@ -296,7 +297,6 @@ class BARFFreqModel(Model):
     def step_cb(self, step):
         """Callback to register a training step has passed. This is used to keep track of the sampling schedule"""
         self._step = step
-        # self._steps_since_update += 1
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
