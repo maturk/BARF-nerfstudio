@@ -75,28 +75,14 @@ class BARFPipeline(VanillaPipeline):
         local_rank: int = 0,
         grad_scaler: Optional[GradScaler] = None,
     ):
-        super(VanillaPipeline, self).__init__()
-        self.config = config
-        self.test_mode = test_mode
-
-        self.datamanager: VanillaDataManager = config.datamanager.setup(
-            device=device, test_mode=test_mode, world_size=world_size, local_rank=local_rank
+        super().__init__(
+            config=config,
+            device=device,
+            test_mode=test_mode,
+            world_size=world_size,
+            local_rank=local_rank,
+            grad_scaler=grad_scaler,
         )
-        # TODO(ethan): get rid of scene_bounds from the model
-        assert self.datamanager.train_dataset is not None, "Missing input dataset"
-
-        self._model = config.model.setup(
-            scene_box=self.datamanager.train_dataset.scene_box,
-            num_train_data=len(self.datamanager.train_dataset),
-            metadata=self.datamanager.train_dataset.metadata,
-        )
-        self.model.to(device)
-
-        self.world_size = world_size
-        if world_size > 1:
-            self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
-            dist.barrier(device_ids=[local_rank])
-
         self.poses_dir = ""  # directory to save poses for visualization is set by trainer.py (must fix though)
 
     @profiler.time_function
@@ -108,8 +94,8 @@ class BARFPipeline(VanillaPipeline):
             step: current iteration step
         """
         self.eval()
-        image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+        camera, batch = self.datamanager.next_eval_image(step)
+        outputs = self.model.get_outputs_for_camera(camera)
         metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
 
         if self.model.camera_optimizer.config.mode == "SO3xR3" or self.model.camera_optimizer.config.mode == "SE3":
@@ -122,10 +108,8 @@ class BARFPipeline(VanillaPipeline):
                 self.model.camera_optimizer.pose_adjustment[:, 3:], dim=-1
             ).mean()
 
-        assert "image_idx" not in metrics_dict
-        metrics_dict["image_idx"] = image_idx
         assert "num_rays" not in metrics_dict
-        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        metrics_dict["num_rays"] = (camera.height * camera.width * camera.size).item()
 
         if self.config.vis_config.save_poses:
             fig_as_np_array, error = save_poses(step, self.config.vis_config, self.datamanager.train_dataset, self.model.camera_optimizer)
