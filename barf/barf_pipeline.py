@@ -29,7 +29,7 @@ from barf.utils.exporter_utils import save_poses, create_pose_gif
 
 @dataclass
 class PosesConfig(PrintableConfig):
-    save_poses: bool = (True,)
+    save_poses: bool = True
     """save poses for visualization"""
     cam_depth: float = 1.0
     """camera depth for visualization"""
