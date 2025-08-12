@@ -48,6 +48,7 @@ class BARFFieldFreq(Field):
         head_mlp_layer_width: int = 128,
         skip_connections: Tuple[int] = (4,),
         density_noise_reg : float = 0.0,
+        scene_box: Optional[SceneBox] = None,
         # field_heads: Tuple[FieldHead] = (RGBFieldHead(),),
         # use_integrated_encoding: bool = False,
         # spatial_distortion: Optional[SpatialDistortion] = None,
@@ -59,6 +60,7 @@ class BARFFieldFreq(Field):
         self.base_mlp_layer_width = base_mlp_layer_width
         self.head_mlp_num_layers = head_mlp_num_layers
         self.head_mlp_layer_width = head_mlp_layer_width
+        self.scene_box = scene_box
 
         self.mlp_base = MLP(
             in_dim=self.position_encoding.get_out_dim(),
@@ -103,7 +105,12 @@ class BARFFieldFreq(Field):
 
     def get_density(self, ray_samples: RaySamples, step: int):
         """Computes and returns the densities."""
-        encoded_xyz = self.position_encoding(ray_samples.frustums.get_positions(), step)
+        positions = ray_samples.frustums.get_positions()
+        if self.scene_box is not None:
+            # Normalize to [0, 1] within scene bounds, matching Nerfstudio convention
+            aabb = self.scene_box.aabb.to(positions.device)
+            positions = SceneBox.get_normalized_positions(positions, aabb)
+        encoded_xyz = self.position_encoding(positions, step)
         base_mlp_out = self.mlp_base(encoded_xyz)
         # if density_noise_reg != 0:
         #     density_feature = base_mlp_out  

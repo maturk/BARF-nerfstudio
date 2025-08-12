@@ -42,12 +42,14 @@ from nerfstudio.model_components.losses import (
     scale_gradients_by_distance_squared,
 )
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
+from nerfstudio.model_components.scene_colliders import AABBBoxCollider, NearFarCollider
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
     DepthRenderer,
     RGBRenderer,
 )
 from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 from nerfstudio.utils.writer import GLOBAL_BUFFER
@@ -62,6 +64,9 @@ class BARFFreqModelConfig(ModelConfig):
     """BARF Model Config"""
 
     _target: Type = field(default_factory=lambda: BARFFreqModel)
+    # Use more permissive near/far by default like nerfacto
+    collider_params: dict = to_immutable_dict({"near_plane": 0.05, "far_plane": 1000.0})
+    background_color: str = "last_sample"
     num_coarse_samples: int = 128
     """Number of samples in coarse field evaluation"""
     num_importance_samples: int = 128
@@ -155,11 +160,13 @@ class BARFFreqModel(Model):
         self.field_coarse = BARFFieldFreq(
             position_encoding=position_encoding,
             direction_encoding=direction_encoding,
+            scene_box=self.scene_box,
         )
         if self.config.fine_field_enabled:
             self.field_fine = BARFFieldFreq(
                 position_encoding=position_encoding,
                 direction_encoding=direction_encoding,
+                scene_box=self.scene_box,
             )
 
         # samplers
@@ -168,7 +175,8 @@ class BARFFreqModel(Model):
             self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
 
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
+        # Match nerfstudio defaults for robustness
+        self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 
@@ -185,6 +193,9 @@ class BARFFreqModel(Model):
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
             num_cameras=self.num_train_data, device="cuda"
         )
+
+        # Clip rays to the dataset's scene bounds to keep sampling in-scale with the room
+        self.collider = AABBBoxCollider(scene_box=self.scene_box, near_plane=0.0)
 
         assert self.config.freeze_fields is None or len(self.config.freeze_fields) % 2 == 0
         self.freeze_fields = []
@@ -292,6 +303,16 @@ class BARFFreqModel(Model):
             outputs["depth_fine"] = depth_fine
             outputs["density_fine"] = density_fine
 
+        # Standard output keys expected by viewer/metrics
+        if self.config.fine_field_enabled:
+            outputs["rgb"] = rgb_fine
+            outputs["accumulation"] = accumulation_fine
+            outputs["depth"] = depth_fine
+        else:
+            outputs["rgb"] = rgb_coarse
+            outputs["accumulation"] = accumulation_coarse
+            outputs["depth"] = depth_coarse
+
         return outputs
 
     def step_cb(self, step):
@@ -312,78 +333,58 @@ class BARFFreqModel(Model):
         return callbacks
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
-        # Scaling metrics by coefficients to create the losses.
-        device = outputs["rgb_coarse"].device
-        image = batch["image"].to(device)
-        rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
+        # Use background blending like nerfstudio to handle alpha properly
+        image = batch["image"].to(self.device)
+        pred_rgb, gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb"],
+            pred_accumulation=outputs["accumulation"],
+            gt_image=image,
+        )
+        rgb_loss = self.rgb_loss(gt_rgb, pred_rgb)
 
         if self.config.fine_field_enabled:
-            rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
+            # When fine is enabled, still supervise coarse and fine
+            rgb_loss_coarse = self.rgb_loss(gt_rgb, outputs["rgb_coarse"])  # blended above for main pred only
+            rgb_loss_fine = self.rgb_loss(gt_rgb, outputs["rgb_fine"]) 
             loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
         else:
-            loss_dict = {"rgb_loss": rgb_loss_coarse}
+            loss_dict = {"rgb_loss": rgb_loss}
 
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
         return loss_dict
 
+    def get_metrics_dict(self, outputs, batch):
+        metrics_dict: Dict[str, torch.Tensor] = {}
+        gt_rgb = batch["image"].to(self.device)
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
+        predicted_rgb = outputs["rgb"]
+        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+        return metrics_dict
+
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        image = batch["image"].to(outputs["rgb_coarse"].device)
-        rgb_coarse = outputs["rgb_coarse"]
-        acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
-        depth_coarse = colormaps.apply_depth_colormap(
-            outputs["depth_coarse"],
-            accumulation=outputs["accumulation_coarse"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
+        gt_rgb = batch["image"].to(self.device)
+        predicted_rgb = outputs["rgb"]
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
+        acc = colormaps.apply_colormap(outputs["accumulation"])
+        depth = colormaps.apply_depth_colormap(
+            outputs["depth"],
+            accumulation=outputs["accumulation"],
         )
 
-        if self.config.fine_field_enabled:
-            rgb_fine = outputs["rgb_fine"]
-            acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
-            depth_fine = colormaps.apply_depth_colormap(
-                outputs["depth_fine"],
-                accumulation=outputs["accumulation_fine"],
-                near_plane=self.config.collider_params["near_plane"],
-                far_plane=self.config.collider_params["far_plane"],
-            )
-            combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
-            combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
-            combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
-
-        else:
-            combined_rgb = torch.cat([image, rgb_coarse], dim=1)
-            combined_acc = torch.cat([acc_coarse], dim=1)
-            combined_depth = torch.cat([depth_coarse], dim=1)
+        combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
+        combined_acc = torch.cat([acc], dim=1)
+        combined_depth = torch.cat([depth], dim=1)
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
-        image = torch.moveaxis(image, -1, 0)[None, ...]
-        rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
+        gt_rgb_ch = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
+        pred_ch = torch.moveaxis(predicted_rgb, -1, 0)[None, ...]
 
-        coarse_psnr = self.psnr(image, rgb_coarse)
-        coarse_ssim = self.ssim(image, rgb_coarse)
-        coarse_lpips = self.lpips(image, rgb_coarse)
-
-        if self.config.fine_field_enabled:
-            rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
-            fine_psnr = self.psnr(image, rgb_fine)
-            fine_ssim = self.ssim(image, rgb_fine)
-            fine_lpips = self.lpips(image, rgb_fine)
-            metrics_dict = {
-                "coarse_psnr": float(coarse_psnr),
-                "coarse_ssim": float(coarse_ssim),
-                "coarse_lpips": float(coarse_lpips),
-                "fine_psnr": float(fine_psnr),
-                "fine_ssim": float(fine_ssim),
-                "fine_lpips": float(fine_lpips),
-            }
-        else:
-            metrics_dict = {
-                "psnr": float(coarse_psnr),
-                "ssim": float(coarse_ssim),
-                "lpips": float(coarse_lpips),
-            }
+        psnr = self.psnr(gt_rgb_ch, pred_ch)
+        ssim = self.ssim(gt_rgb_ch, pred_ch)
+        lpips = self.lpips(gt_rgb_ch, pred_ch)
+        metrics_dict = {"psnr": float(psnr), "ssim": float(ssim), "lpips": float(lpips)}
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict
 
